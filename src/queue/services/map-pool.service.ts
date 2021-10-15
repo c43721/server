@@ -6,6 +6,17 @@ import { Events } from '@/events/events';
 import { Map, MapDocument } from '../models/map';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import {
+  filter,
+  of,
+  switchMap,
+  takeUntil,
+  interval,
+  retryWhen,
+  delayWhen,
+  timeout,
+  timer,
+} from 'rxjs';
 
 @Injectable()
 export class MapPoolService implements OnModuleInit {
@@ -29,7 +40,31 @@ export class MapPoolService implements OnModuleInit {
       await this.mapModel.insertMany(defaultMapPool.maps);
     }
 
-    this.refreshMaps();
+    const queueEmpty = this.events.queueSlotsChange.pipe(
+      filter(({ slots }) => slots.every((s) => s.playerId === null)),
+    );
+
+    queueEmpty.subscribe((s) => this.logger.debug('queue empty'));
+
+    const queueNotEmpty = this.events.queueSlotsChange.pipe(
+      filter(({ slots }) => slots.some((s) => s.playerId)),
+    );
+
+    queueNotEmpty.subscribe((s) => this.logger.debug('queue filling up'));
+
+    queueEmpty
+      .pipe(
+        takeUntil(queueNotEmpty),
+        retryWhen((errors) =>
+          errors.pipe(
+            delayWhen(() => timer(5000)),
+            switchMap(() => of(this.refreshMaps())),
+          ),
+        ),
+      )
+      .subscribe((s) => this.logger.verbose('queue empty, refreshing maps'));
+
+    await this.refreshMaps();
   }
 
   async getMaps(): Promise<Map[]> {
